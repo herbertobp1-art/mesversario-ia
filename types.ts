@@ -1,29 +1,38 @@
 
-export enum Gender {
-  MALE = 'Masculino',
-  FEMALE = 'Feminino',
-  NEUTRAL = 'Neutro'
-}
-
 export enum PhotoStyle {
-  STUDIO = 'Estúdio Fotográfico',
-  MINIMALIST = 'Minimalista',
-  COZY = 'Aconchegante',
-  LUXURY = 'Luxo Delicado'
+  STUDIO = 'Estúdio Profissional',
+  COSTUME = 'Fantasia de Personagem',
+  RELIGIOUS = 'Tema Bíblico/Religioso',
+  PARTY = 'Festa Infantil',
+  NATURE = 'Natureza/Ar Livre',
+  FREE = 'Livre'
 }
 
-export interface GeneratorFormData {
-  babyName: string;
-  ageInMonths: number;
-  theme: string;
-  gender: Gender;
-  colorPalette: string;
-  style: PhotoStyle;
+export enum Quality {
+  STANDARD = 'Padrão',
+  HIGH = 'Alta (4K)'
+}
+
+export enum AspectRatio {
+  PORTRAIT = '9:16',
+  LANDSCAPE = '16:9',
+  SQUARE = '1:1'
 }
 
 export interface GeneratedImage {
-  url: string;
-  prompt: string;
-  timestamp: number;
   id: string;
+  url: string;
+  timestamp: number;
+  prompt: string;
+  isFavorite: boolean;
+}
+
+export interface GenerationConfig {
+  theme: string;
+  month: string;
+  customText?: string;
+  style: PhotoStyle;
+  numImages: number;
+  quality: Quality;
+  aspectRatio: AspectRatio;
 }

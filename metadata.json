@@ -1,5 +1,7 @@
 {
-  "name": "Mêsversário IA",
-  "description": "Um gerador encantador de fotos de mêsversário para bebês, usando inteligência artificial para criar memórias mágicas em segundos.",
-  "requestFramePermissions": []
+  "name": "Gerador de Fotos de Mesversário",
+  "description": "Estúdio fotográfico profissional de IA para criar ensaios mensais de bebês mantendo as características físicas originais enquanto muda cenários, roupas e temas.",
+  "requestFramePermissions": [
+    "camera"
+  ]
 }

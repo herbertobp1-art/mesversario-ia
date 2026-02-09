@@ -1,544 +1,254 @@
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
-  Baby, 
-  Sparkles, 
-  ChevronRight, 
-  Download, 
-  RefreshCw, 
-  History, 
-  Image as ImageIcon,
-  Heart,
-  Camera,
-  Layers,
-  CheckCircle2,
-  X,
-  Maximize2,
-  Wand2,
-  Upload,
-  Trash2,
-  Search,
-  AlertCircle,
-  Video,
-  PlayCircle,
-  ExternalLink,
-  ShieldCheck,
-  Lock,
-  Clock,
-  CircleAlert
-} from 'lucide-react';
-import { GeneratorFormData, Gender, PhotoStyle, GeneratedImage } from './types';
+  PhotoStyle, 
+  Quality, 
+  AspectRatio, 
+  GeneratedImage, 
+  GenerationConfig 
+} from './types';
+import { MONTHS, EXAMPLES, LOADING_MESSAGES } from './constants';
 import { GeminiService } from './services/geminiService';
-import { POPULAR_THEMES, COLOR_OPTIONS, STYLE_DESCRIPTIONS } from './constants';
-
-const WAITING_MESSAGES = [
-  "Preparando as luzes mágicas...",
-  "Capturando os melhores ângulos...",
-  "Eternizando esse sorrisinho...",
-  "Quase pronto para o show!",
-  "Dando o brilho final no vídeo..."
-];
+import Header from './components/Header';
+import ImageUploader from './components/ImageUploader';
+import SettingsForm from './components/SettingsForm';
+import ResultGallery from './components/ResultGallery';
+import LoadingOverlay from './components/LoadingOverlay';
+import Tutorial from './components/Tutorial';
+import ExamplesModal from './components/ExamplesModal';
 
 const App: React.FC = () => {
-  const [formData, setFormData] = useState<GeneratorFormData>({
-    babyName: '',
-    ageInMonths: 1,
+  const [baseImage, setBaseImage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState(LOADING_MESSAGES[0]);
+  const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([]);
+  const [generationCount, setGenerationCount] = useState(0);
+  const [showTutorial, setShowTutorial] = useState(true);
+  const [showExamples, setShowExamples] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [config, setConfig] = useState<GenerationConfig>({
     theme: '',
-    gender: Gender.NEUTRAL,
-    colorPalette: '',
-    style: PhotoStyle.COZY
+    month: MONTHS[0],
+    customText: '',
+    style: PhotoStyle.STUDIO,
+    numImages: 1,
+    quality: Quality.STANDARD,
+    aspectRatio: AspectRatio.SQUARE
   });
 
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [generatedImage, setGeneratedImage] = useState<GeneratedImage | null>(null);
-  const [userPhoto, setUserPhoto] = useState<string | null>(null);
-  const [history, setHistory] = useState<GeneratedImage[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [showFullImage, setShowFullImage] = useState(false);
-  const [editPrompt, setEditPrompt] = useState('');
-  const [isEditing, setIsEditing] = useState(false);
-  
-  const [isAnimating, setIsAnimating] = useState(false);
-  const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
-  const [waitingMessageIdx, setWaitingMessageIdx] = useState(0);
-  
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const geminiService = new GeminiService();
+  useEffect(() => {
+    const savedImages = localStorage.getItem('mesversario_history');
+    if (savedImages) {
+      setGeneratedImages(JSON.parse(savedImages));
+    }
+    const tutorialSeen = localStorage.getItem('mesversario_tutorial_seen');
+    if (tutorialSeen) {
+      setShowTutorial(false);
+    }
+  }, []);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: name === 'ageInMonths' ? parseInt(value) : value }));
-  };
+  useEffect(() => {
+    localStorage.setItem('mesversario_history', JSON.stringify(generatedImages.slice(0, 10)));
+  }, [generatedImages]);
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (file.size > 5 * 1024 * 1024) {
-      setError("A imagem é muito grande. Escolha uma foto de até 5MB.");
+  const handleGenerate = async () => {
+    if (!baseImage) return;
+    if (generationCount >= 10) {
+      setError("Você atingiu o limite de 10 gerações por sessão. Recarregue a página para continuar.");
       return;
     }
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setUserPhoto(reader.result as string);
-      setError(null);
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleApiError = async (err: any) => {
-    console.error("Gemini Error Handler:", err);
-    let msg = err.message || "Ocorreu um erro inesperado.";
-
-    // Quota Error (429)
-    if (msg.includes("429") || msg.includes("quota") || msg.includes("RESOURCE_EXHAUSTED")) {
-      msg = "Limite de uso atingido (Quota). Por favor, aguarde alguns segundos e tente novamente ou verifique se sua chave tem créditos.";
-    } 
-    // Entity Not Found (API Key Issue)
-    else if (msg.includes("Requested entity was not found")) {
-      msg = "Configuração de chave inválida. Por favor, selecione sua chave novamente.";
-      // @ts-ignore
-      await window.aistudio.openSelectKey();
-    }
-    // Safety Refusal (often long conversational text)
-    else if (msg.length > 50) { 
-       msg = "A IA recusou o pedido por segurança ou política de identidade. Dica: Tente descrever o tema sem citar marcas registradas ou remova a foto de referência.";
+    // High Quality check for API Key as per Veo/Imagen rules
+    if (config.quality === Quality.HIGH) {
+      const hasKey = await (window as any).aistudio?.hasSelectedApiKey?.();
+      if (!hasKey) {
+        await (window as any).aistudio?.openSelectKey?.();
+        // Proceeding assuming success as per race condition rules
+      }
     }
 
-    setError(msg);
-  };
-
-  const generateImage = async () => {
-    if (!formData.theme) {
-      setError("Por favor, escolha ou digite um tema para o mêsversário.");
-      return;
-    }
-
-    setIsGenerating(true);
+    setLoading(true);
     setError(null);
-    setGeneratedVideoUrl(null);
-    try {
-      const result = await geminiService.generateMilestoneImage(formData, userPhoto || undefined);
-      const newImage: GeneratedImage = {
-        id: Date.now().toString(),
-        url: result.url,
-        prompt: result.prompt,
-        timestamp: Date.now()
-      };
-      setGeneratedImage(newImage);
-      setHistory(prev => [newImage, ...prev]);
-    } catch (err: any) {
-      handleApiError(err);
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
-  const handleEdit = async () => {
-    if (!generatedImage || !editPrompt) return;
-    
-    setIsEditing(true);
-    setError(null);
-    try {
-      const newUrl = await geminiService.editImage(generatedImage.url, editPrompt);
-      const updatedImage = { ...generatedImage, url: newUrl, timestamp: Date.now() };
-      setGeneratedImage(updatedImage);
-      setEditPrompt('');
-    } catch (err: any) {
-      handleApiError(err);
-    } finally {
-      setIsEditing(false);
-    }
-  };
-
-  const handleAnimate = async () => {
-    if (!generatedImage) return;
-
-    // @ts-ignore
-    const hasKey = await window.aistudio.hasSelectedApiKey();
-    if (!hasKey) {
-      // @ts-ignore
-      await window.aistudio.openSelectKey();
-    }
-
-    setIsAnimating(true);
-    setError(null);
-    setGeneratedVideoUrl(null);
-
-    const msgInterval = setInterval(() => {
-      setWaitingMessageIdx(prev => (prev + 1) % WAITING_MESSAGES.length);
-    }, 8000);
+    let msgIndex = 0;
+    const interval = setInterval(() => {
+      msgIndex = (msgIndex + 1) % LOADING_MESSAGES.length;
+      setLoadingMsg(LOADING_MESSAGES[msgIndex]);
+    }, 3000);
 
     try {
-      const videoUrl = await geminiService.generateVideo(
-        generatedImage.url, 
-        `Animate the baby milestone scene. Preserve likeness.`,
-        '9:16'
-      );
-      setGeneratedVideoUrl(videoUrl);
+      const base64Data = baseImage.split(',')[1];
+      
+      // Optional: Validation
+      const validation = await GeminiService.validateBabyPhoto(base64Data);
+      if (!validation.isBaby) {
+        setError("A foto enviada não parece ser de um bebê. Por favor, envie uma foto mais clara.");
+        setLoading(false);
+        clearInterval(interval);
+        return;
+      }
+
+      const urls = await GeminiService.generatePhotos(base64Data, config);
+      
+      const newImages: GeneratedImage[] = urls.map(url => ({
+        id: Math.random().toString(36).substr(2, 9),
+        url,
+        timestamp: Date.now(),
+        prompt: config.theme || config.style,
+        isFavorite: false
+      }));
+
+      setGeneratedImages(prev => [...newImages, ...prev]);
+      setGenerationCount(prev => prev + 1);
     } catch (err: any) {
-      handleApiError(err);
+      console.error(err);
+      if (err.message?.includes("Requested entity was not found")) {
+         setError("Erro na chave de API. Por favor, selecione uma chave de um projeto com faturamento ativo.");
+         await (window as any).aistudio?.openSelectKey?.();
+      } else {
+         setError("Ops! Algo deu errado ao gerar suas fotos. Tente usar um tema mais simples ou verifique sua conexão.");
+      }
     } finally {
-      setIsAnimating(false);
-      clearInterval(msgInterval);
+      clearInterval(interval);
+      setLoading(false);
     }
   };
 
-  const downloadImage = () => {
-    if (!generatedImage) return;
-    const link = document.createElement('a');
-    link.href = generatedImage.url;
-    link.download = `mesversario-${formData.babyName || 'bebe'}-${formData.ageInMonths}-meses.png`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleToggleFavorite = (id: string) => {
+    setGeneratedImages(prev => prev.map(img => 
+      img.id === id ? { ...img, isFavorite: !img.isFavorite } : img
+    ));
   };
 
-  const downloadVideo = () => {
-    if (!generatedVideoUrl) return;
-    const link = document.createElement('a');
-    link.href = generatedVideoUrl;
-    link.download = `mesversario-animado.mp4`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleRegenerate = (prompt: string) => {
+    setConfig(prev => ({ ...prev, theme: prompt }));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   return (
-    <div className="min-h-screen baby-gradient pb-20">
-      <header className="bg-white/80 backdrop-blur-md sticky top-0 z-40 border-b border-pink-100 px-4 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="bg-pink-400 p-2 rounded-xl text-white shadow-sm">
-            <Baby size={24} />
-          </div>
-          <h1 className="text-xl font-bold text-gray-800 tracking-tight">Mêsversário IA</h1>
-        </div>
-        <button 
-          onClick={() => { setGeneratedImage(null); setGeneratedVideoUrl(null); setError(null); }}
-          className="text-pink-500 hover:bg-pink-50 p-2 rounded-full transition-colors"
-        >
-          <History size={20} />
-        </button>
-      </header>
-
-      <main className="max-w-2xl mx-auto p-4 space-y-8">
-        {!generatedImage ? (
-          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
-            <div className="text-center space-y-2">
-              <h2 className="text-3xl font-bold text-gray-800">Crie memórias mágicas</h2>
-              <p className="text-gray-500 text-sm">Transforme cada mês em uma foto ou vídeo único.</p>
-            </div>
-
-            <div className="bg-white rounded-3xl shadow-sm border border-pink-50 p-6 space-y-6">
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <label className="text-sm font-semibold text-gray-700 flex items-center gap-1">
-                    <Upload size={14} className="text-purple-500" /> Foto do seu bebê
-                  </label>
-                  {userPhoto && (
-                    <span className="flex items-center gap-1 text-[10px] bg-green-50 text-green-600 px-2 py-0.5 rounded-full font-bold">
-                      <ShieldCheck size={10} /> Face Protegida
-                    </span>
-                  )}
-                </div>
-                
-                {!userPhoto ? (
-                  <div 
-                    onClick={() => fileInputRef.current?.click()}
-                    className="border-2 border-dashed border-purple-100 bg-purple-50/30 rounded-2xl p-6 flex flex-col items-center justify-center cursor-pointer hover:bg-purple-50 transition-colors group"
-                  >
-                    <div className="bg-white p-3 rounded-full text-purple-400 group-hover:scale-110 transition-transform shadow-sm mb-2">
-                      <Camera size={24} />
-                    </div>
-                    <p className="text-sm text-purple-600 font-medium">Clique para escolher a foto</p>
-                    <p className="text-xs text-purple-400 mt-1 italic">A IA respeitará os traços originais</p>
-                  </div>
-                ) : (
-                  <div className="relative inline-block w-full">
-                    <img 
-                      src={userPhoto} 
-                      alt="Sua foto" 
-                      className="w-full h-48 object-cover rounded-2xl border-4 border-white shadow-md"
-                    />
-                    <div className="absolute inset-0 bg-black/10 rounded-2xl flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
-                      <div className="bg-white/90 p-2 rounded-full text-green-600 flex items-center gap-2 text-xs font-bold shadow-sm">
-                        <Lock size={14} /> Trava de Likeness Ativa
-                      </div>
-                    </div>
-                    <button 
-                      onClick={() => setUserPhoto(null)}
-                      className="absolute top-2 right-2 bg-white/90 text-red-500 p-2 rounded-full shadow-md hover:bg-red-50 transition-colors"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                )}
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  onChange={handlePhotoUpload} 
-                  accept="image/*" 
-                  className="hidden" 
-                />
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-semibold text-gray-700 flex items-center gap-1">
-                    <Heart size={14} className="text-pink-400" /> Nome do Bebê
-                  </label>
-                  <input 
-                    name="babyName"
-                    value={formData.babyName}
-                    onChange={handleInputChange}
-                    placeholder="Ex: Alice"
-                    className="w-full bg-gray-50 border-none rounded-xl px-4 py-3 focus:ring-2 focus:ring-pink-200 outline-none"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-semibold text-gray-700 flex items-center gap-1">
-                    <Sparkles size={14} className="text-yellow-400" /> Idade (Meses)
-                  </label>
-                  <input 
-                    type="number"
-                    min="1"
-                    max="12"
-                    name="ageInMonths"
-                    value={formData.ageInMonths}
-                    onChange={handleInputChange}
-                    className="w-full bg-gray-50 border-none rounded-xl px-4 py-3 focus:ring-2 focus:ring-pink-200 outline-none"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <label className="text-sm font-semibold text-gray-700 flex items-center gap-1">
-                  <Layers size={14} className="text-blue-400" /> Qual o Tema?
-                </label>
-                <div className="relative group">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-                  <input 
-                    name="theme"
-                    value={formData.theme}
-                    onChange={handleInputChange}
-                    placeholder="Ursinho, Realeza, Jardim..."
-                    className="w-full bg-gray-50 border-2 border-transparent rounded-2xl pl-12 pr-4 py-4 text-sm font-medium focus:bg-white focus:border-pink-200 outline-none shadow-sm"
-                  />
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {POPULAR_THEMES.map(theme => (
-                    <button
-                      key={theme}
-                      onClick={() => setFormData(prev => ({ ...prev, theme }))}
-                      className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
-                        formData.theme === theme 
-                        ? 'bg-pink-500 text-white shadow-md scale-105' 
-                        : 'bg-white text-gray-600 border border-gray-100 hover:bg-pink-50'
-                      }`}
-                    >
-                      {theme}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <label className="text-sm font-semibold text-gray-700">Estilo da Foto</label>
-                  <div className="grid grid-cols-1 gap-2">
-                    {Object.values(PhotoStyle).map(style => (
-                      <button
-                        key={style}
-                        onClick={() => setFormData(prev => ({ ...prev, style }))}
-                        className={`text-left p-3 rounded-xl border-2 transition-all ${
-                          formData.style === style 
-                          ? 'border-pink-500 bg-pink-50 shadow-sm' 
-                          : 'border-transparent bg-gray-50 hover:bg-gray-100'
-                        }`}
-                      >
-                        <div className="font-bold text-sm text-gray-800">{style}</div>
-                        <div className="text-[10px] text-gray-500 leading-tight">{STYLE_DESCRIPTIONS[style]}</div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="space-y-4">
-                  <label className="text-sm font-semibold text-gray-700">Paleta de Cores</label>
-                  <div className="flex flex-wrap gap-2">
-                    {COLOR_OPTIONS.map(color => (
-                      <button
-                        key={color.name}
-                        title={color.name}
-                        onClick={() => setFormData(prev => ({ ...prev, colorPalette: color.name }))}
-                        className={`w-7 h-7 rounded-full border-2 transition-transform hover:scale-110 ${color.class} ${
-                          formData.colorPalette === color.name ? 'ring-2 ring-pink-500 shadow-md' : 'border-transparent shadow-sm'
-                        }`}
-                      />
-                    ))}
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <label className="text-sm font-semibold text-gray-700">Gênero</label>
-                    <div className="flex gap-2">
-                      {Object.values(Gender).map(g => (
-                        <button
-                          key={g}
-                          onClick={() => setFormData(prev => ({ ...prev, gender: g }))}
-                          className={`flex-1 py-2 rounded-xl text-xs font-medium border-2 transition-all ${
-                            formData.gender === g 
-                            ? 'border-blue-400 bg-blue-50 text-blue-700' 
-                            : 'border-transparent bg-gray-50 text-gray-600 shadow-sm'
-                          }`}
-                        >
-                          {g}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {error && (
-                <div className="p-4 bg-red-50 text-red-600 rounded-2xl text-xs flex gap-3 items-start border border-red-100 animate-in fade-in zoom-in-95">
-                  <CircleAlert size={18} className="shrink-0" />
-                  <p className="leading-relaxed">{error}</p>
-                </div>
-              )}
-
-              <button 
-                onClick={generateImage}
-                disabled={isGenerating}
-                className="w-full bg-pink-500 hover:bg-pink-600 disabled:bg-gray-300 text-white font-bold py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-all"
-              >
-                {isGenerating ? <RefreshCw className="animate-spin" size={20} /> : <Sparkles size={20} />}
-                {isGenerating ? 'Criando sua memória...' : 'Gerar Mêsversário Mágico'}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-6 animate-in zoom-in-95 duration-500">
-            <div className="flex items-center justify-between">
-              <button onClick={() => { setGeneratedImage(null); setGeneratedVideoUrl(null); setError(null); }} className="text-gray-500 flex items-center gap-1 text-sm font-medium hover:text-pink-500 transition-colors">
-                <ChevronRight size={18} className="rotate-180" /> Voltar
-              </button>
-              <div className="flex gap-2">
-                <button onClick={() => setShowFullImage(true)} className="bg-white text-gray-700 p-2 rounded-xl border border-gray-100 shadow-sm hover:bg-gray-50 transition-colors">
-                  <Maximize2 size={20} />
-                </button>
-                <button onClick={downloadImage} className="bg-pink-500 text-white px-4 py-2 rounded-xl shadow-lg flex items-center gap-2 hover:bg-pink-600 transition-colors">
-                  <Download size={18} /> Baixar
-                </button>
-              </div>
-            </div>
-
-            <div className="relative group">
-              <div className="bg-white p-3 rounded-[2.5rem] shadow-2xl border border-pink-50 overflow-hidden min-h-[300px] flex items-center justify-center">
-                {generatedVideoUrl ? (
-                  <video 
-                    src={generatedVideoUrl} 
-                    controls 
-                    autoPlay 
-                    loop 
-                    className="w-full rounded-[2rem] shadow-inner"
-                  />
-                ) : (
-                  <img src={generatedImage.url} alt="Mêsversário" className="w-full aspect-square object-cover rounded-[2rem]" />
-                )}
-                
-                {(isEditing || isAnimating) && (
-                  <div className="absolute inset-0 bg-white/75 backdrop-blur-md flex flex-col items-center justify-center rounded-[2.5rem] text-center p-6">
-                    <RefreshCw className="animate-spin text-pink-500 mb-4" size={48} />
-                    <p className="font-bold text-pink-600 text-lg px-4">
-                      {isAnimating ? WAITING_MESSAGES[waitingMessageIdx] : 'Ajustando cada detalhe...'}
-                    </p>
-                    <div className="mt-4 flex items-center gap-2 bg-white px-3 py-1 rounded-full border border-pink-100 shadow-sm animate-pulse">
-                       <ShieldCheck className="text-green-500" size={14} />
-                       <span className="text-[10px] text-gray-600 font-bold uppercase tracking-wider">Likeness Preservada</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="bg-white p-6 rounded-3xl shadow-sm border border-pink-50 space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-gray-800 font-bold">
-                  <Wand2 size={18} className="text-purple-500" />
-                  Ajuste Mágico
-                </div>
-                {!generatedVideoUrl && (
-                  <button 
-                    onClick={handleAnimate}
-                    disabled={isAnimating || isEditing}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-full text-xs font-bold hover:bg-blue-100 transition-colors border border-blue-100"
-                  >
-                    <Video size={14} /> Animando (Veo)
-                  </button>
-                )}
-              </div>
-              
-              <div className="flex gap-2">
-                <input 
-                  value={editPrompt}
-                  onChange={(e) => setEditPrompt(e.target.value)}
-                  placeholder="Ex: 'Adicione um laço' ou 'Filtro sépia'"
-                  className="flex-1 bg-gray-50 border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-purple-200 outline-none transition-all"
-                  onKeyPress={(e) => e.key === 'Enter' && handleEdit()}
-                />
-                <button 
-                  onClick={handleEdit}
-                  disabled={isEditing || isAnimating || !editPrompt}
-                  className="bg-purple-500 hover:bg-purple-600 disabled:bg-gray-200 text-white px-4 rounded-xl font-bold text-sm transition-all"
-                >
-                  {isEditing ? <RefreshCw className="animate-spin" size={18} /> : 'Aplicar'}
-                </button>
-              </div>
-
-              {error && (
-                <div className="p-3 bg-red-50 text-red-600 rounded-xl text-[10px] flex gap-2 items-center border border-red-100 animate-shake">
-                  <CircleAlert size={14} />
-                  <span>{error}</span>
-                </div>
-              )}
-
-              <div className="flex items-center gap-2 bg-green-50/50 p-2 rounded-xl border border-green-100/50">
-                 <Lock size={12} className="text-green-600" />
-                 <span className="text-[10px] text-green-700 font-medium italic">Aparência preservada. Mudamos apenas os acessórios e cenário.</span>
-              </div>
-
-              {generatedVideoUrl && (
-                <button 
-                  onClick={downloadVideo}
-                  className="w-full flex items-center justify-center gap-2 py-3 bg-blue-500 text-white rounded-xl font-bold hover:bg-blue-600 transition-colors shadow-lg shadow-blue-100"
-                >
-                  <Download size={18} /> Baixar Vídeo Animado
-                </button>
-              )}
-            </div>
-
+    <div className="min-h-screen pb-12 flex flex-col">
+      <Header />
+      
+      <main className="flex-grow container mx-auto px-4 sm:px-6 lg:px-8 max-w-4xl mt-8">
+        <div className="bg-white rounded-3xl shadow-xl p-6 sm:p-10 border border-pink-50 relative overflow-hidden">
+          <div className="absolute top-0 right-0 p-4">
             <button 
-              onClick={generateImage}
-              disabled={isGenerating || isAnimating || isEditing}
-              className="w-full bg-white border-2 border-pink-200 text-pink-600 font-bold py-4 rounded-2xl hover:bg-pink-50 transition-all flex items-center justify-center gap-2 shadow-sm"
+              onClick={() => setShowExamples(true)}
+              className="bg-yellow-100 text-yellow-600 px-3 py-1.5 rounded-full text-xs font-bold hover:bg-yellow-200 transition-colors flex items-center gap-1 shadow-sm"
             >
-              <RefreshCw size={20} className={isGenerating ? 'animate-spin' : ''} />
-              Tentar outra versão para este mês
+              💡 Ver Exemplos
             </button>
           </div>
+
+          <section className="mb-10">
+            <h2 className="text-2xl font-bold text-gray-800 mb-2 flex items-center gap-2">
+              <span className="text-pink-400">📷</span> 1. Foto de Referência
+            </h2>
+            <ImageUploader 
+              onImageUpload={setBaseImage} 
+              currentImage={baseImage}
+            />
+          </section>
+
+          <section className="mb-10">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+              <span className="text-blue-400">✨</span> 2. Estúdio e Tema
+            </h2>
+            <SettingsForm 
+              config={config} 
+              setConfig={setConfig} 
+              disabled={loading}
+            />
+          </section>
+
+          <div className="flex flex-col gap-4">
+            {error && (
+              <div className="bg-red-50 text-red-600 p-4 rounded-xl text-center border border-red-100 animate-fadeIn">
+                <p className="font-medium">{error}</p>
+                <button 
+                  onClick={handleGenerate}
+                  className="mt-2 text-sm font-bold underline hover:text-red-800"
+                >
+                  Tentar novamente
+                </button>
+              </div>
+            )}
+
+            <button
+              onClick={handleGenerate}
+              disabled={!baseImage || loading || generationCount >= 10}
+              className={`w-full py-5 rounded-2xl text-xl font-bold shadow-lg transition-all transform hover:scale-[1.01] active:scale-95 flex items-center justify-center gap-3 ${
+                !baseImage || loading || generationCount >= 10
+                  ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                  : 'bg-gradient-to-r from-pink-400 to-blue-400 text-white hover:shadow-pink-200'
+              }`}
+            >
+              {loading ? (
+                <>
+                  <svg className="animate-spin h-6 w-6 text-white" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  {loadingMsg}
+                </>
+              ) : (
+                <>🎨 Gerar Fotos de Mesversário</>
+              )}
+            </button>
+            <p className="text-center text-xs text-gray-400 font-medium">
+              Gerações nesta sessão: <span className={generationCount >= 8 ? 'text-red-400' : 'text-blue-400'}>{generationCount}/10</span>
+            </p>
+          </div>
+        </div>
+
+        {generatedImages.length > 0 && (
+          <section className="mt-16">
+            <h2 className="text-3xl font-bold text-gray-800 mb-8 text-center flex items-center justify-center gap-2">
+              Sua Galeria Mágica <span className="text-2xl">🎠</span>
+            </h2>
+            <ResultGallery 
+              images={generatedImages} 
+              onToggleFavorite={handleToggleFavorite}
+              onRegenerate={handleRegenerate}
+              baseImage={baseImage}
+            />
+          </section>
         )}
+
+        <section className="mt-20 border-t border-gray-100 pt-16">
+          <h2 className="text-2xl font-bold text-gray-800 mb-8 text-center">Dúvidas Frequentes</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-50">
+              <h3 className="font-bold text-pink-500 mb-2">Como ter o melhor resultado?</h3>
+              <p className="text-sm text-gray-500">Use fotos do bebê de frente, com boa iluminação e sem chupeta ou objetos cobrindo o rosto.</p>
+            </div>
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-50">
+              <h3 className="font-bold text-blue-500 mb-2">As fotos são reais?</h3>
+              <p className="text-sm text-gray-500">Não, são criações de Inteligência Artificial que preservam os traços do seu bebê em cenários digitais.</p>
+            </div>
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-50">
+              <h3 className="font-bold text-yellow-500 mb-2">Privacidade e Segurança</h3>
+              <p className="text-sm text-gray-500">Não armazenamos suas fotos. Todo o processamento é feito para gerar a imagem e descartado em seguida.</p>
+            </div>
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-50">
+              <h3 className="font-bold text-green-500 mb-2">Posso usar comercialmente?</h3>
+              <p className="text-sm text-gray-500">Este app é para uso pessoal e recordação familiar. Lembre-se do uso ético de imagens geradas por IA.</p>
+            </div>
+          </div>
+        </section>
       </main>
 
-      {showFullImage && generatedImage && (
-        <div className="fixed inset-0 z-50 bg-black/95 backdrop-blur-xl flex items-center justify-center p-4 cursor-pointer" onClick={() => setShowFullImage(false)}>
-          <button className="absolute top-6 right-6 text-white p-2 hover:bg-white/10 rounded-full transition-colors"><X size={32} /></button>
-          {generatedVideoUrl ? (
-            <video src={generatedVideoUrl} controls autoPlay loop className="max-w-full max-h-full rounded-2xl shadow-2xl" onClick={e => e.stopPropagation()} />
-          ) : (
-            <img src={generatedImage.url} alt="Full Screen" className="max-w-full max-h-full rounded-2xl shadow-2xl" onClick={e => e.stopPropagation()} />
-          )}
-        </div>
-      )}
+      {loading && <LoadingOverlay message={loadingMsg} />}
+      {showTutorial && <Tutorial onClose={() => { setShowTutorial(false); localStorage.setItem('mesversario_tutorial_seen', 'true'); }} />}
+      {showExamples && <ExamplesModal onClose={() => setShowExamples(false)} onSelect={(t) => { setConfig({...config, theme: t}); setShowExamples(false); }} />}
+
+      <footer className="mt-16 text-center text-gray-400 pb-12 px-4 border-t border-gray-50 pt-8">
+        <p className="font-medium">© 2024 Gerador de Mesversário IA</p>
+        <p className="text-xs mt-2 max-w-lg mx-auto leading-relaxed">
+          Desenvolvido para criar memórias inesquecíveis. Tecnologia Imagen 3 & Veo do Google. 
+          Certifique-se de ter permissão para usar as fotos enviadas.
+        </p>
+      </footer>
     </div>
   );
 };
